@@ -46,19 +46,27 @@ class_diag <- function(score, truth, positive, cutoff=.5){
 
 # Mining, Classification, Prediction
 
-## Name and EID here
+## Tejas Karuturi, tk22543
 
 ### Introduction 
 
-Paragraph or two introducing your datasets and variables, why they are interesting to you, etc. See instructions for more information
+*The datasets I chose are about Pokemon. I used to play Pokemon a lot back when I was younger, and I still play quite a bit to this day. One of my favorite content creators makes fire music about Pokemon, which made me even more interested. The first Pokemon dataset contains a Pokedex from Generation 1 to Generation 6, covering the Name, its typings, its stats, its generation, and whether it is a legendary pokemon or not. The second Pokemon dataset contains a Pokedex from Generation 1 to Generation 8, covering the Pokedex number, the pokemon name, its height and weight, its base experience, and whether it is a default pokemon.*
+
+*This project classifies Pokemon data based on a merged dataset of two Pokemon datasets containing all the variables from both datasets. The numeric variables are Total, HP, Attack, Defense, Sp.Atk, Sp.Def, Speed, height, weight, and base experience. The categorical variables are the primary type, the secondary type, and the Generation. The binary variables are the Legendary status and the default status.*
 
 ```{R}
 library(tidyverse)
 # read your datasets in here, e.g., with read_csv()
+pokemon1 <- read_csv("pokemon_dataset_1.csv")
+pokemon2 <- read_csv("pokemon_dataset_2.csv")
 
 # if your dataset needs tidying, do so here
+poke1 <- pokemon1 %>% mutate(Name = tolower(Name))
+poke2 <- pokemon2 %>% select(-id, -order, -species_id)
 
 # any other code here
+poke_join <- poke1 %>% full_join(poke2, by=c(Name="identifier")) %>% drop_na(ID)
+head(poke_join)
 ```
 
 ### Cluster Analysis
@@ -66,68 +74,173 @@ library(tidyverse)
 ```{R}
 library(cluster)
 # clustering code here
+poke_clust <- poke_join %>% select(HP, Sp.Atk, Sp.Def)
+
+sil_width<-vector()
+for(i in 2:10){  
+  kms <- kmeans(poke_clust,centers=i)
+  sil <- silhouette(kms$cluster,dist(poke_clust))
+  sil_width[i]<-mean(sil[,3])
+}
+ggplot()+geom_line(aes(x=1:10,y=sil_width))+scale_x_continuous(name="k",breaks=1:10)
+
+poke_pam <- poke_clust %>% pam(k=2)
+poke_pam$silinfo$avg.width
+poke_clust %>% slice(poke_pam$id.med)
+
+library(GGally)
+poke_clust %>% ungroup %>% mutate(cluster = as.factor(poke_pam$clustering)) %>% ggpairs(columns = 1:3, aes(color = cluster))
 ```
 
-Discussion of clustering here
+*The best k for the cluster solution was the one that gave the highest silhouette width, which was k=2. The three variables used for clustering were HP, Sp.Atk, and Sp.Def, and the silhouette width generated from the cluster was 0.3759, which conveys that the clustering is weak and the structure setup could be artificial, even if this was the best cluster results generated. There is a strong positive correlation between Sp.Atk and Sp.Def at 0.506. The rest of the correlations are moderate positive correlations, with HP and Sp.Atk having a correlation of 0.362, and HP and Sp.Def having a correlation of 0.379.*
     
     
 ### Dimensionality Reduction with PCA
 
 ```{R}
 # PCA code here
+poke_pca <- princomp(poke_clust, cor = T)
+summary(poke_pca)
+
+poke_pca_matscores <- poke_pca$scores %>% as.data.frame %>% 
+    mutate(general = poke_join$Total)
+poke_pca_matscores %>% ggplot(mapping = aes(x = poke_pca$scores[, 
+    1], y = poke_pca$scores[, 2], color = general)) + geom_point() + 
+    xlab("PC1") + ylab("PC2")
 ```
 
-Discussions of PCA here. 
+*Using the Clustering Data from above, the total stats tend to increase when the PC1 variable increases. Not much change is made when PC2 increases, but it seems as if total stats tend to decrease because the points are getting darker. There are two points that have a comparatively high PC1 and PC2. The standard deviation and the variance proportion is larger for HP than it is for Sp.Atk and Sp.Def, that being said, the total variance for HP is the highest and can explain the results of the two points having extremely high PC1 and PC2 values.*
 
 ###  Linear Classifier
 
 ```{R}
 # linear classifier code here
+logistic_fit <- glm(Legendary ~ HP + Attack + Defense + Sp.Atk + Sp.Def + Speed + height + weight + base_experience, data = poke_join, family = "binomial")
+
+prob_reg <- predict(logistic_fit)
+class_diag(prob_reg, poke_join$Legendary, positive = "TRUE")
 ```
 
 ```{R}
 # cross-validation of linear classifier here
+set.seed(322)
+k = 10
+
+data <- sample_frac(poke_join)
+folds <- rep(1:k, length.out = nrow(data))
+
+diags <- NULL
+
+i = 1
+for (i in 1:k) {
+    train <- data[folds != i, ]
+    test <- data[folds == i, ]
+    truth <- test$Legendary
+    
+    fit <- glm(Legendary ~ HP + Attack + Defense + Sp.Atk + Sp.Def + Speed + height + weight + 
+                 base_experience, data = train, family = "binomial")
+    
+    probs <- predict(fit, newdata = test)
+    
+    diags <- rbind(diags, class_diag(probs, truth, positive = "TRUE"))
+}
+
+summarize_all(diags, mean)
 ```
 
-Discussion here
+*All numeric variables, except for total stats, are included when classifying a Legendary Pokemon. The model achieves an accuracy of 0.9462, an F1 score of 0.6055, and an AUC of 0.9816 when using a linear classifier. Using k-fold cross-validation with k=10, the model achieves an accuracy of 0.9425, an F1 score of 0.57452, and an AUC of 0.98024. The model performs very well per AUC in both instances. There is no noticeable decrease when predicting out of sample because the difference between AUC without cross-validation and AUC with cross-validation is miniscule, so there are no signs of overfitting.*
 
 ### Non-Parametric Classifier
 
 ```{R}
 library(caret)
 # non-parametric classifier code here
+knn_fit <- knn3(Legendary ~ HP + Attack + Defense + Sp.Atk + Sp.Def + Speed + height + weight + 
+                  base_experience, data = poke_join)
+
+prob_knn <- predict(knn_fit, poke_join)
+class_diag(prob_knn[, 2], poke_join$Legendary, positive = "TRUE")
 ```
 
 ```{R}
 # cross-validation of np classifier here
+set.seed(322)
+k = 10
+
+data <- sample_frac(poke_join)
+folds <- rep(1:k, length.out = nrow(data))
+
+diags <- NULL
+
+i = 1
+for (i in 1:k) {
+    train <- data[folds != i, ]
+    test <- data[folds == i, ]
+    truth <- test$Legendary
+    
+    fit <- knn3(Legendary ~ HP + Attack + Defense + Sp.Atk + Sp.Def + Speed + height + weight + 
+                  base_experience, data = train)
+    
+    # test model
+    probs <- predict(fit, newdata = test)
+    
+    # get performance metrics for each fold
+    diags <- rbind(diags, class_diag(probs[, 2], truth, positive = "TRUE"))
+}
+
+# average performance metrics across all folds
+summarize_all(diags, mean)
 ```
 
-Discussion
+*The model achieves an accuracy of 0.9675, an F1 score of 0.7903, and an AUC of 0.9887 when using a non-parametric classifier. When using k-folds cross-validation with k=10, the model achieves an accuracy of 0.945, an F1 score of 0.65758, and an AUC of 0.94214. The model performs very well per AUC and has a slightly larger AUC than the linear classifier without cross-validation. With cross-validation, the model performs worse with the non-parametric classifier compared to the linear classifier. Because there is a decrease in AUC, the model shows signs of overfitting.*
 
 
 ### Regression/Numeric Prediction
 
 ```{R}
 # regression model code here
+fit <- lm(Total ~ HP + Attack + Defense + Sp.Atk + Sp.Def + Speed, data=poke_join)
+yhat <- predict(fit)
+mean((poke_join$Total - yhat)^2)
 ```
 
 ```{R}
 # cross-validation of regression model here
+set.seed(1234)
+k=5
+data <- poke_join[sample(nrow(poke_join)),]
+folds <- cut(seq(1:nrow(poke_join)),breaks=k,labels=F)
+diags <- NULL
+
+for(i in 1:k){
+  train <- data[folds!=i,]
+  test <- data[folds==i,]
+  
+  fit <- lm(Total ~ HP + Attack + Defense + Sp.Atk + Sp.Def + Speed, data=train)
+  yhat <- predict(fit,newdata=test)
+  diags <- mean((test$Total-yhat)^2) 
+}
+mean(diags)
 ```
 
-Discussion
+*For regression/numeric prediction, I predicted the total stats based on HP, Attack, Defense, Special Attack, Special Defense, and Speed. The mean squared error is 2.1457e-25 without cross-validation and it is 1.0995e-25 with cross-validation. The MSE is slightly less for cross-validation but the difference is small, so there is no signs of overfitting.*
 
 ### Python 
 
 ```{R}
 library(reticulate)
+use_python("/usr/bin/python3", required=F)
+who_dat_pokemon <- "It's"
+cat(c(who_dat_pokemon, py$who_dat_pokemon))
 ```
 
 ```{python}
 # python code here
+who_dat_pokemon = "Pikachu"
+print(r.who_dat_pokemon, who_dat_pokemon)
 ```
 
-Discussion
+*I created a variable and assigned it to "It's" in R. In Python, I assigned another variable to "Pikachu" and printed both variables after calling the variable from R, and I called the variable from Python in my R code to generate the sentence: "It's Pikachu".*
 
 ### Concluding Remarks
 
